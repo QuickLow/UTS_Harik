@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+    <h2>Form Tambah Produk</h2>
+    <form action="create.php" method="POST">
+        <label for="name">Nama Produk:</label><br>
+        <input type="text" id="name" name="name" required><br><br>
+
+        <label for="description">Deskripsi Produk:</label><br>
+        <textarea id="description" name="description" required></textarea><br><br>
+
+        <label for="price">Harga Produk:</label><br>
+        <input type="number" id="price" name="price" required><br><br>
+
+        <input type="submit" value="Simpan Produk">
+    </form>
+</body>
+</html>
