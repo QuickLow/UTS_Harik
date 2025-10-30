@@ -2,7 +2,9 @@
 $servername = "localhost";
 $username = "root";
 $password = "";
-$dbname = "db_webpro5d";
+$dbname = "uts";
+// SET ZONA WAKTU AGAR SAMA DENGAN DATABASE (WIB)
+date_default_timezone_set('Asia/Pontianak');
 
 // Create connection
 $conn = new mysqli($servername, $username, $password, $dbname);
