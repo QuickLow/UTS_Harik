@@ -1,49 +1,110 @@
 <?php
-session_start();
+// 1. Menggunakan kelas-kelas PHPMailer
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\SMTP;
+use PHPMailer\PHPMailer\Exception;
+
+// 1b. Menginclude file PHPMailer
+require '../PHPMailer/Exception.php';
+require '../PHPMailer/PHPMailer.php';
+require '../PHPMailer/SMTP.php';
+
+// 2. Menginclude file koneksi database
 require_once '../config/conn_db.php';
 
+// 3. Variabel untuk menyimpan pesan
 $message = '';
 $error = '';
-$reset_link = '';
+$form_processed = false;
 
-// Cek jika form disubmit
+// 4. Cek apakah form sudah di-submit (method POST)
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
+
     $email = $_POST['email'];
 
     if (empty($email)) {
-        $error = "Email wajib diisi!";
+        $error = "Field email wajib diisi!";
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $error = "Format email tidak valid!";
     } else {
-        // 1. Cek apakah email ada di database
-        $stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND status = 1");
-        $stmt->bind_param("s", $email);
-        $stmt->execute();
-        $result = $stmt->get_result();
+        
+        // 5. Cek apakah email ada di database DAN sudah aktif (status = 1)
+        $stmt_check = $conn->prepare("SELECT id, name FROM users WHERE email = ? AND status = 1");
+        $stmt_check->bind_param("s", $email);
+        $stmt_check->execute();
+        $result = $stmt_check->get_result();
 
-        if ($result->num_rows == 1) {
-            // 2. Email ditemukan. Buat token dan waktu expiry.
-            $token = bin2hex(random_bytes(32));
-            // Set token expiry 1 jam dari sekarang
-            $expiry_time = date("Y-m-d H:i:s", time() + 3600); 
+        if ($result->num_rows == 0) {
+            // Email tidak ditemukan atau belum aktif.
+            // CATATAN KEAMANAN: Kita tetap tampilkan pesan sukses
+            // agar orang lain tidak bisa menebak-nebak email yang terdaftar.
+            $message = "Jika email Anda terdaftar dan aktif, link reset password telah dikirim.";
+            $form_processed = true;
+        } else {
+            // 6. Email ditemukan dan aktif. Lanjutkan proses reset.
+            $user = $result->fetch_assoc();
+            $user_name = $user['name'];
 
-            // 3. Simpan token dan expiry ke database
-            $stmt_update = $conn->prepare("UPDATE users SET reset_token = ?, reset_token_expiry = ? WHERE email = ?");
-            $stmt_update->bind_param("sss", $token, $expiry_time, $email);
+            // 7. Buat token reset unik
+            $reset_token = bin2hex(random_bytes(32));
+            
+            // 8. Tentukan waktu kadaluarsa token (misal: 1 jam dari sekarang)
+            // 'time() + 3600' berarti 3600 detik = 1 jam
+            $expires = date("Y-m-d H:i:s", time() + 3600); 
+
+            // 9. Simpan token dan waktu kadaluarsa ke database
+            $stmt_update = $conn->prepare("UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE email = ?");
+            $stmt_update->bind_param("sss", $reset_token, $expires, $email);
             
             if ($stmt_update->execute()) {
-                // 4. SIMULASI PENGIRIMAN EMAIL
-                // Tampilkan link reset di halaman
-                $reset_link = "http://localhost/UTS/user-mngmt/reset_password.php?token=" . $token;
-                $message = "Permintaan reset password berhasil. Silakan cek 'email' Anda untuk link reset.";
+                // 10. Buat link reset
+                $reset_link = "http://localhost/UTS/user-mngmt/reset_password.php?token=" . $reset_token;
+
+                // MULAI KODE PENGIRIMAN EMAIL (PHPMailer)
+                
+                $mail = new PHPMailer(true);
+
+                try {
+                    // Server settings
+                    $mail->isSMTP();
+                    $mail->Host       = 'smtp.gmail.com';
+                    $mail->SMTPAuth   = true;
+                    
+                    // !! GANTI BAGIAN INI DENGAN DATA 
+                    $mail->Username   = 'harikkurniawan6072@gmail.com'; // GANTI DENGAN EMAIL GMAIL ANDA
+                    $mail->Password   = 'mrli gtfi tegn iylb';    // GANTI DENGAN APP PASSWORD ANDA
+                    
+
+                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
+                    $mail->Port       = 465;
+
+                    // Recipients
+                    // Ganti 'email_anda@gmail.com' di bawah ini dengan email yang sama dengan $mail->Username
+                    $mail->setFrom('harikkurniawan6072@gmail.com', 'Admin SETRUM'); // Email dan Nama Pengirim
+                    $mail->addAddress($email, $user_name);     // Email Penerima (dari form)
+
+                    // Content
+                    $mail->isHTML(true);
+                    $mail->Subject = 'Reset Password Akun SETRUM Anda';
+                    $mail->Body    = "Halo $user_name,<br><br>Kami menerima permintaan untuk mereset password Anda. Klik link di bawah ini untuk melanjutkan:<br><br><a href='$reset_link'>Reset Password Saya</a><br><br>Link ini akan kadaluarsa dalam 1 jam.<br><br>Jika Anda tidak merasa meminta ini, abaikan email ini.<br><br>Salam,<br>Tim SETRUM";
+                    $mail->AltBody = "Halo $user_name, Silakan salin dan tempel link ini di browser Anda untuk mereset password: $reset_link";
+
+                    $mail->send();
+                    
+                    $message = "Jika email Anda terdaftar dan aktif, link reset password telah dikirim.";
+                    $form_processed = true;
+                    
+                } catch (Exception $e) {
+                    $error = "Email gagal dikirim. Hubungi admin. Mailer Error: {$mail->ErrorInfo}";
+                }
+                // SELESAI KODE PENGIRIMAN EMAIL
+                
             } else {
-                $error = "Gagal memproses permintaan. Silakan coba lagi.";
+                $error = "Gagal memperbarui token. Silakan coba lagi.";
             }
             $stmt_update->close();
-        } else {
-            $error = "Email tidak ditemukan atau akun belum aktif.";
         }
-        $stmt->close();
+        $stmt_check->close();
     }
     $conn->close();
 }
@@ -62,12 +123,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         .form-group { margin-bottom: 20px; }
         .form-group label { display: block; margin-bottom: 8px; font-weight: bold; }
         .form-group input { width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
-        .btn { background-color: #007bff; color: white; padding: 12px; border: none; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; }
-        .btn:hover { background-color: #0056b3; }
+        .btn { background-color: #dc3545; color: white; padding: 12px; border: none; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; }
+        .btn:hover { background-color: #c82333; }
         .message { padding: 15px; margin-bottom: 20px; border-radius: 4px; }
         .message.success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
         .message.error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-        .activation-link { background: #e2e3e5; padding: 10px; border-radius: 4px; font-size: 0.9em; word-wrap: break-word; }
+        .login-link { text-align: center; margin-top: 20px; }
     </style>
 </head>
 <body>
@@ -81,30 +142,23 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             <div class="message error"><?php echo $error; ?></div>
         <?php endif; ?>
 
-        <?php if (!empty($reset_link)): ?>
-            <div class="form-group">
-                <label>Simulasi Link Reset:</label>
-                <div class="activation-link">
-                    <p>Klik link ini untuk me-reset password (link ini seharusnya dikirim ke email):</p>
-                    <a href="<?php echo $reset_link; ?>" target="_blank"><?php echo $reset_link; ?></a>
-                </div>
-            </div>
-            <p style="text-align: center; margin-top: 20px;">
-                <a href="login.php">Kembali ke Login</a>
-            </p>
-        <?php else: ?>
-            <p style="text-align: center; margin-bottom: 20px;">Masukkan email Anda yang terdaftar. Kami akan mengirimkan link untuk me-reset password Anda.</p>
+        <?php 
+        // Jika form belum diproses, tampilkan form.
+        // Jika sudah, sembunyikan.
+        if ($form_processed == false): 
+        ?>
             <form action="forgot_password.php" method="POST">
                 <div class="form-group">
-                    <label for="email">Email:</label>
+                    <label for="email">Email Terdaftar:</label>
                     <input type="email" id="email" name="email" required>
                 </div>
                 <button type="submit" class="btn">Kirim Link Reset</button>
             </form>
-            <p style="text-align: center; margin-top: 20px;">
-                <a href="login.php">Batal</a>
-            </p>
         <?php endif; ?>
+
+        <div class="login-link">
+            <a href="login.php">Kembali ke Login</a>
+        </div>
     </div>
 </body>
 </html>

@@ -1,78 +1,91 @@
 <?php
-session_start();
+// 1. Menginclude file koneksi
 require_once '../config/conn_db.php';
 
+// 2. Variabel
 $message = '';
 $error = '';
+$token_valid = false;
 $token = '';
-$show_form = false;
 
-// Bagian 1: Verifikasi Token saat halaman di-LOAD (GET)
-if ($_SERVER["REQUEST_METHOD"] == "GET" && isset($_GET['token'])) {
+// 3. Cek apakah ada token di URL (method GET)
+if (isset($_GET['token']) && !empty($_GET['token'])) {
     $token = $_GET['token'];
 
-    // Cek apakah token valid DAN belum kedaluwarsa (expiry > NOW())
-    $stmt = $conn->prepare("SELECT id FROM users WHERE reset_token = ? AND reset_token_expiry > NOW()");
-    $stmt->bind_param("s", $token);
-    $stmt->execute();
-    $result = $stmt->get_result();
+    // 4. Validasi token di database
+    $stmt_check = $conn->prepare("SELECT id, reset_token_expires FROM users WHERE reset_token = ?");
+    $stmt_check->bind_param("s", $token);
+    $stmt_check->execute();
+    $result = $stmt_check->get_result();
 
-    if ($result->num_rows == 1) {
-        // Token valid, tampilkan form
-        $show_form = true;
-    } else {
-        $error = "Token tidak valid atau sudah kedaluwarsa. Silakan minta link reset baru.";
-    }
-    $stmt->close();
+    if ($result->num_rows > 0) {
+        $user = $result->fetch_assoc();
+        $expires = $user['reset_token_expires'];
+        $current_time = date("Y-m-d H:i:s");
 
-// Bagian 2: Proses Form saat di-SUBMIT (POST)
-} elseif ($_SERVER["REQUEST_METHOD"] == "POST") {
-    
-    $token = $_POST['token'];
-    $new_password = $_POST['new_password'];
-    $confirm_password = $_POST['confirm_password'];
-
-    // Validasi input
-    if (empty($new_password) || empty($confirm_password) || empty($token)) {
-        $error = "Semua field wajib diisi!";
-        $show_form = true; // Tetap tampilkan form
-    } elseif ($new_password !== $confirm_password) {
-        $error = "Password baru dan konfirmasi password tidak cocok!";
-        $show_form = true; // Tetap tampilkan form
-    } elseif (strlen($new_password) < 6) {
-        $error = "Password baru minimal harus 6 karakter!";
-        $show_form = true; // Tetap tampilkan form
-    } else {
-        // 1. Cek ulang token (untuk keamanan, jika user butuh waktu lama mengisi form)
-        $stmt_check = $conn->prepare("SELECT id FROM users WHERE reset_token = ? AND reset_token_expiry > NOW()");
-        $stmt_check->bind_param("s", $token);
-        $stmt_check->execute();
-        $result_check = $stmt_check->get_result();
-
-        if ($result_check->num_rows == 1) {
-            // 2. Token masih valid. Update password!
-            $new_hashed_password = password_hash($new_password, PASSWORD_DEFAULT);
-            
-            // 3. Update password DAN hapus token-nya agar tidak bisa dipakai lagi
-            $stmt_update = $conn->prepare("UPDATE users SET password = ?, reset_token = NULL, reset_token_expiry = NULL WHERE reset_token = ?");
-            $stmt_update->bind_param("ss", $new_hashed_password, $token);
-
-            if ($stmt_update->execute()) {
-                $message = "Password Anda telah berhasil direset! Silakan login dengan password baru Anda.";
-                $show_form = false; // Sembunyikan form, tampilkan pesan sukses
-            } else {
-                $error = "Gagal memperbarui password. Silakan coba lagi.";
-                $show_form = true;
-            }
-            $stmt_update->close();
+        // 5. Cek apakah token sudah kedaluwarsa
+        if ($current_time > $expires) {
+            $error = "Link reset password ini sudah kedaluwarsa. Silakan ajukan permintaan baru.";
         } else {
-            $error = "Token tidak valid atau sudah kedaluwarsa. Proses dibatalkan.";
-            $show_form = false;
+            // Token valid dan belum kedaluwarsa
+            $token_valid = true;
         }
-        $stmt_check->close();
+    } else {
+        $error = "Token tidak valid. Pastikan Anda menggunakan link yang benar.";
     }
+    $stmt_check->close();
+
 } else {
-    $error = "Akses tidak valid.";
+    // 6. Handle jika form password baru di-submit (method POST)
+    if ($_SERVER["REQUEST_METHOD"] == "POST") {
+        
+        $token = $_POST['token']; // Ambil token dari hidden field
+        $password = $_POST['password'];
+        $password_confirm = $_POST['password_confirm'];
+
+        // 7. Validasi input
+        if (empty($password) || empty($password_confirm)) {
+            $error = "Semua field password wajib diisi.";
+            $token_valid = true; // Tetap tampilkan form
+        } elseif ($password !== $password_confirm) {
+            $error = "Password dan Konfirmasi Password tidak cocok.";
+            $token_valid = true; // Tetap tampilkan form
+        } elseif (strlen($password) < 6) {
+            $error = "Password minimal harus 6 karakter.";
+            $token_valid = true; // Tetap tampilkan form
+        } else {
+            // 8. Validasi token sekali lagi (untuk keamanan)
+            $stmt_check_post = $conn->prepare("SELECT id FROM users WHERE reset_token = ? AND reset_token_expires > NOW()");
+            $stmt_check_post->bind_param("s", $token);
+            $stmt_check_post->execute();
+            $result_post = $stmt_check_post->get_result();
+
+            if ($result_post->num_rows > 0) {
+                // Token valid, hash password baru
+                $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+                
+                // 9. Update password dan hapus token
+                // Kita set token & expires jadi NULL agar tidak bisa dipakai lagi
+                $stmt_update = $conn->prepare("UPDATE users SET password = ?, reset_token = NULL, reset_token_expires = NULL WHERE reset_token = ?");
+                $stmt_update->bind_param("ss", $hashed_password, $token);
+                
+                if ($stmt_update->execute()) {
+                    $message = "Password Anda telah berhasil diperbarui! Silakan login dengan password baru Anda.";
+                    // $token_valid kita biarkan false agar form-nya hilang
+                } else {
+                    $error = "Gagal memperbarui password. Silakan coba lagi.";
+                    $token_valid = true;
+                }
+                $stmt_update->close();
+            } else {
+                $error = "Token tidak valid atau sudah kedaluwarsa.";
+            }
+            $stmt_check_post->close();
+        }
+    } else {
+        // Jika halaman dibuka tanpa token
+        $error = "Token tidak ditemukan. Silakan gunakan link dari email Anda.";
+    }
 }
 
 $conn->close();
@@ -91,48 +104,48 @@ $conn->close();
         .form-group { margin-bottom: 20px; }
         .form-group label { display: block; margin-bottom: 8px; font-weight: bold; }
         .form-group input { width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
-        .btn { background-color: #007bff; color: white; padding: 12px; border: none; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; }
-        .btn:hover { background-color: #0056b3; }
+        .btn { background-color: #28a745; color: white; padding: 12px; border: none; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; }
+        .btn:hover { background-color: #218838; }
         .message { padding: 15px; margin-bottom: 20px; border-radius: 4px; }
         .message.success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
         .message.error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .login-link { text-align: center; margin-top: 20px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>Reset Password Baru</h2>
+        <h2>Atur Password Baru</h2>
 
         <?php if (!empty($message)): ?>
             <div class="message success"><?php echo $message; ?></div>
-            <p style="text-align: center;">
-                <a href="login.php" class="btn">Menuju Halaman Login</a>
-            </p>
         <?php endif; ?>
         <?php if (!empty($error)): ?>
             <div class="message error"><?php echo $error; ?></div>
         <?php endif; ?>
 
-        <?php if ($show_form): ?>
-            <p style="text-align: center; margin-bottom: 20px;">Masukkan password baru Anda.</p>
+        <?php 
+        // Tampilkan form HANYA jika token valid
+        if ($token_valid): 
+        ?>
             <form action="reset_password.php" method="POST">
                 <input type="hidden" name="token" value="<?php echo htmlspecialchars($token); ?>">
                 
                 <div class="form-group">
-                    <label for="new_password">Password Baru:</label>
-                    <input type="password" id="new_password" name="new_password" required>
+                    <label for="password">Password Baru:</label>
+                    <input type="password" id="password" name="password" required>
                 </div>
                 <div class="form-group">
-                    <label for="confirm_password">Konfirmasi Password Baru:</label>
-                    <input type="password" id="confirm_password" name="confirm_password" required>
+                    <label for="password_confirm">Konfirmasi Password Baru:</label>
+                    <input type="password" id="password_confirm" name="password_confirm" required>
                 </div>
-                <button type="submit" class="btn">Reset Password</button>
+                <button type="submit" class="btn">Simpan Password Baru</button>
             </form>
         <?php endif; ?>
 
-        <?php if (!empty($error) && !$show_form): ?>
-            <p style="text-align: center; margin-top: 20px;">
-                <a href="login.php">Kembali ke Login</a>
-            </p>
+        <?php if (!empty($message)): ?>
+            <div class="login-link">
+                <a href="login.php">Ke Halaman Login</a>
+            </div>
         <?php endif; ?>
 
     </div>
